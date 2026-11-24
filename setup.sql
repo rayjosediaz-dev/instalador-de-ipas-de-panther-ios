@@ -1,0 +1,21 @@
+create table public.admins(id uuid primary key references auth.users(id));
+-- Inserta tu UUID desde SQL Editor después de crear tu usuario.
+alter table public.admins enable row level security;
+create policy own on public.admins for select to authenticated using(id=auth.uid());
+create function public.is_admin() returns boolean language sql stable security definer set search_path=public as $$ select exists(select 1 from public.admins where id=auth.uid()) and (auth.jwt()->>'aal'='aal2') $$;
+create table public.apps(id uuid primary key default gen_random_uuid(), name text not null, version text not null,bundle text not null, manifest text not null, icon text, description text, category text, featured boolean default false, published boolean default false, private boolean default false, details jsonb default '{}', created_at timestamptz default now());
+create table public.versions(id bigint generated always as identity primary key, app_id uuid, snapshot jsonb, created_at timestamptz default now());
+create table public.settings(id int primary key, maintenance boolean default false); insert into public.settings values(1,false);
+create table public.events(id bigint generated always as identity primary key, kind text check(kind in ('visit','install')), app_id uuid, created_at timestamptz default now());
+alter table public.apps enable row level security; alter table public.versions enable row level security; alter table public.settings enable row level security; alter table public.events enable row level security;
+create policy catalog on public.apps for select using(published and not private);
+create policy manage on public.apps for all to authenticated using(public.is_admin()) with check(public.is_admin());
+create policy history on public.versions for all to authenticated using(public.is_admin()) with check(public.is_admin());
+create policy settings_read on public.settings for select using(true);
+create policy settings_write on public.settings for update to authenticated using(public.is_admin()) with check(public.is_admin());
+create policy events_read on public.events for select to authenticated using(public.is_admin());
+create policy events_add on public.events for insert with check(kind in ('visit','install'));
+create function public.audit_app() returns trigger language plpgsql security definer set search_path=public as $$ begin if TG_OP='INSERT' then insert into versions(app_id,snapshot) values(new.id,to_jsonb(new)); return new; else insert into versions(app_id,snapshot) values(old.id,to_jsonb(old)); if TG_OP='DELETE' then return old; end if; return new; end if; end $$;
+create trigger audit after insert or update or delete on public.apps for each row execute function public.audit_app();
+insert into storage.buckets(id,name,public) values('ipas','ipas',true),('private-ipas','private-ipas',false);
+create policy storage_admin on storage.objects for all to authenticated using(bucket_id in ('ipas','private-ipas') and public.is_admin()) with check(bucket_id in ('ipas','private-ipas') and public.is_admin());
